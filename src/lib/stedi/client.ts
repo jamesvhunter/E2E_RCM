@@ -3,6 +3,8 @@
  * Handles all EDI transactions via Stedi Healthcare APIs
  */
 
+import { shouldUseMockData, getMockEligibilityResponse } from "./mock-data";
+
 const STEDI_API_BASE = "https://healthcare.us.stedi.com/2024-04-01";
 
 interface StediConfig {
@@ -43,6 +45,19 @@ class StediClient {
    * Real-time eligibility check (270/271)
    */
   async checkEligibility(request: EligibilityRequest): Promise<EligibilityResponse> {
+    // Check if mock mode should be used
+    if (shouldUseMockData(this.apiKey, request.tradingPartnerServiceId)) {
+      console.log("🧪 Using mock data for eligibility check");
+      console.log(`   Member ID: ${request.subscriber.memberId}`);
+      console.log(`   Payer ID: ${request.tradingPartnerServiceId}`);
+
+      // Simulate API delay
+      await new Promise((resolve) => setTimeout(resolve, 500));
+
+      return getMockEligibilityResponse(request.subscriber.memberId);
+    }
+
+    // Make real API call
     return this.request<EligibilityResponse>(
       "/change/medicalnetwork/eligibility/v3",
       {

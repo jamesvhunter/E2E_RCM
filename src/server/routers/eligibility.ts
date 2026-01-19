@@ -1,59 +1,227 @@
 import { z } from "zod";
 import { createTRPCRouter, protectedProcedure } from "@/lib/trpc/server";
 import { getStediClient, EligibilityResponse } from "@/lib/stedi/client";
+import { formatDateForStedi, generateControlNumber, parseStediDate } from "@/lib/stedi/utils";
+import { logEligibilityRequest, logEligibilityResponse, logEligibilityError } from "@/lib/stedi/logger";
+
+interface ParsedEligibilityResult {
+  isActive: boolean;
+  networkStatus?: string;
+  planName?: string;
+  groupNumber?: string;
+  effectiveDate?: string;
+  terminationDate?: string;
+  subscriberName?: string;
+  copayAmount?: number;
+  deductibleAmount?: number;
+  deductibleRemaining?: number;
+  coinsurancePercent?: number;
+  oopMaxAmount?: number;
+  oopMaxRemaining?: number;
+  coverageLevel?: string;
+  benefitsSummary: any[];
+  planStatus: any[];
+}
+
+/**
+ * Helper function to find a benefit by code with optional filters
+ */
+function findBenefit(
+  benefits: any[],
+  code: string,
+  options?: {
+    inNetwork?: boolean;
+    coverageLevel?: string;
+    timeQualifier?: string;
+  }
+): any | undefined {
+  return benefits.find((b) => {
+    // Match benefit code
+    if (b.code !== code) return false;
+
+    // Match network status if specified
+    if (options?.inNetwork !== undefined) {
+      const isInNetwork = b.inPlanNetworkIndicatorCode === "Y";
+      if (options.inNetwork !== isInNetwork) return false;
+    }
+
+    // Match coverage level if specified (IND = Individual, FAM = Family)
+    if (options?.coverageLevel && b.coverageLevelCode !== options.coverageLevel) {
+      return false;
+    }
+
+    // Match time qualifier if specified (e.g., "29" = Remaining)
+    if (options?.timeQualifier && b.timeQualifierCode !== options.timeQualifier) {
+      return false;
+    }
+
+    return true;
+  });
+}
 
 /**
  * Parse Stedi eligibility response into normalized benefit summary
+ * Comprehensive parsing following Stedi documentation
  */
-function parseEligibilityResponse(response: EligibilityResponse) {
-  const isActive = response.planStatus?.some(
-    (status) =>
-      status.statusCode === "1" ||
-      status.status?.toLowerCase().includes("active")
-  ) ?? false;
+function parseEligibilityResponse(response: EligibilityResponse): ParsedEligibilityResult {
+  // Determine if coverage is active
+  const isActive =
+    response.planStatus?.some(
+      (status) =>
+        status.statusCode === "1" || status.status?.toLowerCase().includes("active")
+    ) ?? false;
 
+  // Extract plan information
+  const planName = response.planInformation?.planName;
+  const groupNumber = response.planInformation?.groupNumber;
+
+  // Extract plan dates
+  let effectiveDate: string | undefined;
+  let terminationDate: string | undefined;
+
+  if (response.planDateInformation) {
+    // Try eligibility dates first, then fall back to plan dates
+    const eligibilityBegin =
+      response.planDateInformation.eligibilityBegin || response.planDateInformation.planBegin;
+    const eligibilityEnd =
+      response.planDateInformation.eligibilityEnd || response.planDateInformation.planEnd;
+
+    // Convert from YYYYMMDD to YYYY-MM-DD
+    if (eligibilityBegin) {
+      try {
+        effectiveDate = parseStediDate(eligibilityBegin);
+      } catch {
+        effectiveDate = eligibilityBegin;
+      }
+    }
+
+    if (eligibilityEnd) {
+      try {
+        terminationDate = parseStediDate(eligibilityEnd);
+      } catch {
+        terminationDate = eligibilityEnd;
+      }
+    }
+  }
+
+  // Extract subscriber name
+  let subscriberName: string | undefined;
+  if (response.subscriber?.firstName && response.subscriber?.lastName) {
+    subscriberName = `${response.subscriber.firstName} ${response.subscriber.lastName}`;
+  }
+
+  // Initialize benefit variables
   let networkStatus: string | undefined;
   let copayAmount: number | undefined;
+  let deductibleAmount: number | undefined;
   let deductibleRemaining: number | undefined;
+  let coinsurancePercent: number | undefined;
+  let oopMaxAmount: number | undefined;
   let oopMaxRemaining: number | undefined;
+  let coverageLevel: string | undefined;
 
   // Parse benefits information
-  if (response.benefitsInformation) {
-    for (const benefit of response.benefitsInformation) {
-      // Network status
-      if (benefit.inPlanNetworkIndicatorCode) {
-        networkStatus = benefit.inPlanNetworkIndicatorCode === "Y" ? "in-network" : "out-of-network";
-      }
+  if (response.benefitsInformation && response.benefitsInformation.length > 0) {
+    const benefits = response.benefitsInformation;
 
-      // Copay (code 30 or B = Co-Payment)
-      if (benefit.code === "B" || benefit.code === "30") {
-        if (benefit.benefitAmount !== undefined) {
-          copayAmount = benefit.benefitAmount;
-        }
-      }
+    // Determine overall network status
+    const hasInNetwork = benefits.some((b) => b.inPlanNetworkIndicatorCode === "Y");
+    const hasOutOfNetwork = benefits.some((b) => b.inPlanNetworkIndicatorCode === "N");
 
-      // Deductible (code C)
-      if (benefit.code === "C") {
-        if (benefit.benefitAmount !== undefined) {
-          deductibleRemaining = benefit.benefitAmount;
-        }
-      }
+    if (hasInNetwork && !hasOutOfNetwork) {
+      networkStatus = "in-network";
+    } else if (hasOutOfNetwork && !hasInNetwork) {
+      networkStatus = "out-of-network";
+    } else if (hasInNetwork && hasOutOfNetwork) {
+      networkStatus = "mixed";
+    }
 
-      // Out of Pocket Maximum (code G)
-      if (benefit.code === "G") {
-        if (benefit.benefitAmount !== undefined) {
-          oopMaxRemaining = benefit.benefitAmount;
-        }
-      }
+    // Prefer in-network benefits for individual coverage
+    const preferInNetwork = true;
+    const preferCoverageLevel = "IND";
+
+    // Co-Payment (code B)
+    const copayBenefit =
+      findBenefit(benefits, "B", { inNetwork: preferInNetwork }) || findBenefit(benefits, "B");
+    if (copayBenefit?.benefitAmount !== undefined) {
+      copayAmount = copayBenefit.benefitAmount;
+    }
+
+    // Deductible (code C)
+    // Try to find both total and remaining
+    const deductibleBenefitTotal =
+      findBenefit(benefits, "C", { inNetwork: preferInNetwork, coverageLevel: preferCoverageLevel }) ||
+      findBenefit(benefits, "C", { inNetwork: preferInNetwork }) ||
+      findBenefit(benefits, "C");
+
+    if (deductibleBenefitTotal?.benefitAmount !== undefined) {
+      deductibleAmount = deductibleBenefitTotal.benefitAmount;
+    }
+
+    // Deductible Remaining (code C with timeQualifierCode = "29")
+    const deductibleBenefitRemaining =
+      findBenefit(benefits, "C", { inNetwork: preferInNetwork, timeQualifier: "29" }) ||
+      benefits.find((b) => b.code === "C" && b.timeQualifierCode === "29");
+
+    if (deductibleBenefitRemaining?.benefitAmount !== undefined) {
+      deductibleRemaining = deductibleBenefitRemaining.benefitAmount;
+    } else if (deductibleAmount !== undefined) {
+      // If no remaining amount, assume it's the same as total (not yet met)
+      deductibleRemaining = deductibleAmount;
+    }
+
+    // Co-Insurance (code A) - returned as percentage
+    const coinsuranceBenefit =
+      findBenefit(benefits, "A", { inNetwork: preferInNetwork }) || findBenefit(benefits, "A");
+    if (coinsuranceBenefit?.benefitPercent !== undefined) {
+      // Stedi returns as decimal (e.g., 0.2 for 20%), convert to percentage
+      coinsurancePercent = coinsuranceBenefit.benefitPercent * 100;
+    }
+
+    // Out of Pocket Maximum (code G)
+    const oopBenefitTotal =
+      findBenefit(benefits, "G", { inNetwork: preferInNetwork, coverageLevel: preferCoverageLevel }) ||
+      findBenefit(benefits, "G", { inNetwork: preferInNetwork }) ||
+      findBenefit(benefits, "G");
+
+    if (oopBenefitTotal?.benefitAmount !== undefined) {
+      oopMaxAmount = oopBenefitTotal.benefitAmount;
+    }
+
+    // Out of Pocket Remaining (code G with timeQualifierCode = "29")
+    const oopBenefitRemaining =
+      findBenefit(benefits, "G", { inNetwork: preferInNetwork, timeQualifier: "29" }) ||
+      benefits.find((b) => b.code === "G" && b.timeQualifierCode === "29");
+
+    if (oopBenefitRemaining?.benefitAmount !== undefined) {
+      oopMaxRemaining = oopBenefitRemaining.benefitAmount;
+    } else if (oopMaxAmount !== undefined) {
+      // If no remaining amount, assume it's the same as total (not yet met)
+      oopMaxRemaining = oopMaxAmount;
+    }
+
+    // Extract coverage level from any benefit that has it
+    const benefitWithCoverageLevel = benefits.find((b) => b.coverageLevelCode);
+    if (benefitWithCoverageLevel?.coverageLevelCode) {
+      coverageLevel = benefitWithCoverageLevel.coverageLevelCode;
     }
   }
 
   return {
     isActive,
     networkStatus,
+    planName,
+    groupNumber,
+    effectiveDate,
+    terminationDate,
+    subscriberName,
     copayAmount,
+    deductibleAmount,
     deductibleRemaining,
+    coinsurancePercent,
+    oopMaxAmount,
     oopMaxRemaining,
+    coverageLevel,
     benefitsSummary: response.benefitsInformation || [],
     planStatus: response.planStatus || [],
   };
@@ -101,7 +269,12 @@ export const eligibilityRouter = createTRPCRouter({
       const providerData = provider as any;
 
       // Build request payload for Stedi
-      const controlNumber = `ELG${Date.now().toString().slice(-9)}`;
+      const controlNumber = generateControlNumber("ELG");
+
+      // Convert dates to Stedi format (YYYYMMDD)
+      const dobFormatted = formatDateForStedi(coverageData.patients.dob);
+      const dateOfServiceFormatted = formatDateForStedi(input.dateOfService);
+
       const requestPayload = {
         controlNumber,
         tradingPartnerServiceId: coverageData.payers.stedi_payer_id,
@@ -115,10 +288,11 @@ export const eligibilityRouter = createTRPCRouter({
           memberId: coverageData.member_id,
           firstName: coverageData.patients.first_name,
           lastName: coverageData.patients.last_name,
-          dateOfBirth: coverageData.patients.dob,
+          dateOfBirth: dobFormatted,
         },
         encounter: {
-          dateOfService: input.dateOfService,
+          dateOfService: dateOfServiceFormatted,
+          serviceTypeCodes: ["30"], // Health Benefit Plan Coverage (general)
         },
       };
 
@@ -128,16 +302,38 @@ export const eligibilityRouter = createTRPCRouter({
 
       // Make actual Stedi API call
       try {
+        // Log request
+        logEligibilityRequest(requestPayload, {
+          coverageId: input.coverageId,
+          providerId: input.providerId,
+        });
+
         const stedi = getStediClient();
         responsePayload = await stedi.checkEligibility(requestPayload);
+
+        // Log response
+        logEligibilityResponse(responsePayload, {
+          coverageId: input.coverageId,
+          providerId: input.providerId,
+        });
+
         parsedResponse = parseEligibilityResponse(responsePayload);
       } catch (error) {
-        console.error("Stedi eligibility check failed:", error);
+        // Log error with context
+        logEligibilityError(
+          error instanceof Error ? error : new Error(String(error)),
+          requestPayload,
+          {
+            coverageId: input.coverageId,
+            providerId: input.providerId,
+          }
+        );
+
         apiError = error instanceof Error ? error.message : "Unknown error";
       }
 
-      // Create eligibility check record
-      const { data: eligibilityCheck, error: insertError } = await supabase
+      // Create eligibility check record with all parsed fields
+      const { data: eligibilityCheck, error: insertError} = await supabase
         .from("eligibility_checks")
         .insert({
           coverage_id: input.coverageId,
@@ -145,11 +341,24 @@ export const eligibilityRouter = createTRPCRouter({
           date_of_service: input.dateOfService,
           request_payload: requestPayload,
           response_payload: responsePayload,
+          // Status fields
           is_active: parsedResponse?.isActive ?? null,
           network_status: parsedResponse?.networkStatus ?? null,
+          // Plan information
+          plan_name: parsedResponse?.planName ?? null,
+          group_number: parsedResponse?.groupNumber ?? null,
+          effective_date: parsedResponse?.effectiveDate ?? null,
+          termination_date: parsedResponse?.terminationDate ?? null,
+          subscriber_name: parsedResponse?.subscriberName ?? null,
+          // Benefit amounts
           copay_amount: parsedResponse?.copayAmount ?? null,
+          deductible_amount: parsedResponse?.deductibleAmount ?? null,
           deductible_remaining: parsedResponse?.deductibleRemaining ?? null,
+          coinsurance_percent: parsedResponse?.coinsurancePercent ?? null,
+          oop_max_amount: parsedResponse?.oopMaxAmount ?? null,
           oop_max_remaining: parsedResponse?.oopMaxRemaining ?? null,
+          coverage_level: parsedResponse?.coverageLevel ?? null,
+          // Raw data
           benefits_summary: parsedResponse?.benefitsSummary ?? null,
           checked_at: new Date().toISOString(),
         } as any)
@@ -173,11 +382,24 @@ export const eligibilityRouter = createTRPCRouter({
         eligibilityCheckId: checkData.id,
         status: apiError ? "error" : "completed",
         error: apiError,
+        // Status
         isActive: parsedResponse?.isActive,
         networkStatus: parsedResponse?.networkStatus,
+        // Plan information
+        planName: parsedResponse?.planName,
+        groupNumber: parsedResponse?.groupNumber,
+        effectiveDate: parsedResponse?.effectiveDate,
+        terminationDate: parsedResponse?.terminationDate,
+        subscriberName: parsedResponse?.subscriberName,
+        // Benefits
         copayAmount: parsedResponse?.copayAmount,
+        deductibleAmount: parsedResponse?.deductibleAmount,
         deductibleRemaining: parsedResponse?.deductibleRemaining,
+        coinsurancePercent: parsedResponse?.coinsurancePercent,
+        oopMaxAmount: parsedResponse?.oopMaxAmount,
         oopMaxRemaining: parsedResponse?.oopMaxRemaining,
+        coverageLevel: parsedResponse?.coverageLevel,
+        // Raw data
         benefitsSummary: parsedResponse?.benefitsSummary,
         planStatus: parsedResponse?.planStatus,
       };
