@@ -44,6 +44,7 @@ import {
   Calendar,
   RefreshCw,
   MessageSquare,
+  Mail,
 } from "lucide-react";
 import { trpc } from "@/lib/trpc/client";
 import { format, formatDistanceToNow } from "date-fns";
@@ -52,7 +53,9 @@ export default function PatientsPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [isIntakeDialogOpen, setIsIntakeDialogOpen] = useState(false);
   const [intakePhone, setIntakePhone] = useState("");
+  const [intakeEmail, setIntakeEmail] = useState("");
   const [intakeDOS, setIntakeDOS] = useState("");
+  const [deliveryChannel, setDeliveryChannel] = useState<"sms" | "email">("email");
   const [activeTab, setActiveTab] = useState("patients");
 
   // Fetch patients
@@ -70,6 +73,7 @@ export default function PatientsPage() {
     onSuccess: () => {
       setIsIntakeDialogOpen(false);
       setIntakePhone("");
+      setIntakeEmail("");
       setIntakeDOS("");
       refetchIntake();
     },
@@ -83,10 +87,13 @@ export default function PatientsPage() {
   });
 
   const handleCreateIntake = () => {
-    if (!intakePhone) return;
+    if (deliveryChannel === "sms" && !intakePhone) return;
+    if (deliveryChannel === "email" && !intakeEmail) return;
 
     createIntakeMutation.mutate({
-      phone: intakePhone,
+      phone: deliveryChannel === "sms" ? intakePhone : undefined,
+      email: deliveryChannel === "email" ? intakeEmail : undefined,
+      deliveryChannel,
       dateOfService: intakeDOS || undefined,
     });
   };
@@ -158,27 +165,80 @@ export default function PatientsPage() {
               <DialogHeader>
                 <DialogTitle>Send Patient Intake Link</DialogTitle>
                 <DialogDescription>
-                  Send a secure intake form link via SMS. The patient will receive a text message
-                  with a link to complete their information.
+                  Send a secure intake form link via {deliveryChannel === "sms" ? "SMS" : "email"}. The patient will receive a {deliveryChannel === "sms" ? "text message" : "professional email"}
+                  {" "}with a link to complete their information.
                 </DialogDescription>
               </DialogHeader>
               <div className="space-y-4 py-4">
+                {/* Delivery Method Toggle */}
                 <div className="space-y-2">
-                  <Label htmlFor="phone">Patient Phone Number *</Label>
-                  <div className="relative">
-                    <Phone className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                    <Input
-                      id="phone"
-                      placeholder="+1 (555) 123-4567"
-                      value={intakePhone}
-                      onChange={(e) => setIntakePhone(e.target.value)}
-                      className="pl-9"
-                    />
+                  <Label>Delivery Method</Label>
+                  <div className="flex gap-2">
+                    <Button
+                      type="button"
+                      variant={deliveryChannel === "email" ? "default" : "outline"}
+                      className="flex-1"
+                      onClick={() => setDeliveryChannel("email")}
+                    >
+                      <Mail className="w-4 h-4 mr-2" />
+                      Email (Recommended)
+                    </Button>
+                    <Button
+                      type="button"
+                      variant={deliveryChannel === "sms" ? "default" : "outline"}
+                      className="flex-1"
+                      onClick={() => setDeliveryChannel("sms")}
+                    >
+                      <MessageSquare className="w-4 h-4 mr-2" />
+                      SMS
+                    </Button>
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    Enter the patient&apos;s mobile phone number
+                    {deliveryChannel === "email"
+                      ? "Professional email with appointment details (if provided)"
+                      : "Text message with secure intake link"}
                   </p>
                 </div>
+
+                {/* Conditional Contact Field */}
+                {deliveryChannel === "sms" ? (
+                  <div className="space-y-2">
+                    <Label htmlFor="phone">Patient Phone Number *</Label>
+                    <div className="relative">
+                      <Phone className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                      <Input
+                        id="phone"
+                        placeholder="+1 (555) 123-4567"
+                        value={intakePhone}
+                        onChange={(e) => setIntakePhone(e.target.value)}
+                        className="pl-9"
+                      />
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Enter the patient&apos;s mobile phone number
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <Label htmlFor="email">Patient Email Address *</Label>
+                    <div className="relative">
+                      <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                      <Input
+                        id="email"
+                        type="email"
+                        placeholder="patient@example.com"
+                        value={intakeEmail}
+                        onChange={(e) => setIntakeEmail(e.target.value)}
+                        className="pl-9"
+                      />
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Enter the patient&apos;s email address
+                    </p>
+                  </div>
+                )}
+
+                {/* Date of Service */}
                 <div className="space-y-2">
                   <Label htmlFor="dos">Date of Service (Optional)</Label>
                   <div className="relative">
@@ -193,6 +253,7 @@ export default function PatientsPage() {
                   </div>
                   <p className="text-xs text-muted-foreground">
                     If provided, eligibility will be checked for this date
+                    {deliveryChannel === "email" && " and shown in the email"}
                   </p>
                 </div>
               </div>
@@ -210,17 +271,26 @@ export default function PatientsPage() {
                 </Button>
                 <Button
                   onClick={handleCreateIntake}
-                  disabled={!intakePhone || createIntakeMutation.isPending}
+                  disabled={
+                    (deliveryChannel === "sms" && !intakePhone) ||
+                    (deliveryChannel === "email" && !intakeEmail) ||
+                    createIntakeMutation.isPending
+                  }
                 >
                   {createIntakeMutation.isPending ? (
                     <>
                       <Loader2 className="w-4 h-4 mr-2 animate-spin" />
                       Sending...
                     </>
-                  ) : (
+                  ) : deliveryChannel === "sms" ? (
                     <>
                       <MessageSquare className="w-4 h-4 mr-2" />
                       Send SMS
+                    </>
+                  ) : (
+                    <>
+                      <Mail className="w-4 h-4 mr-2" />
+                      Send Email
                     </>
                   )}
                 </Button>
@@ -370,10 +440,11 @@ export default function PatientsPage() {
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead>Phone</TableHead>
+                      <TableHead>Contact</TableHead>
+                      <TableHead>Channel</TableHead>
                       <TableHead>Status</TableHead>
                       <TableHead>Date of Service</TableHead>
-                      <TableHead>SMS Status</TableHead>
+                      <TableHead>Delivery Status</TableHead>
                       <TableHead>Created</TableHead>
                       <TableHead>Expires</TableHead>
                       <TableHead className="w-[50px]"></TableHead>
@@ -383,7 +454,24 @@ export default function PatientsPage() {
                     {intakeData.tokens.map((intake) => (
                       <TableRow key={intake.id}>
                         <TableCell className="font-medium">
-                          {formatPhone(intake.phone)}
+                          {intake.deliveryChannel === "email" && intake.email
+                            ? intake.email
+                            : intake.phone
+                            ? formatPhone(intake.phone)
+                            : "-"}
+                        </TableCell>
+                        <TableCell>
+                          {intake.deliveryChannel === "email" ? (
+                            <Badge variant="outline" className="text-blue-600 border-blue-300 bg-blue-50">
+                              <Mail className="w-3 h-3 mr-1" />
+                              Email
+                            </Badge>
+                          ) : (
+                            <Badge variant="outline" className="text-purple-600 border-purple-300 bg-purple-50">
+                              <MessageSquare className="w-3 h-3 mr-1" />
+                              SMS
+                            </Badge>
+                          )}
                         </TableCell>
                         <TableCell>{getStatusBadge(intake.status)}</TableCell>
                         <TableCell>
@@ -392,7 +480,19 @@ export default function PatientsPage() {
                             : "-"}
                         </TableCell>
                         <TableCell>
-                          {intake.smsDeliveryStatus === "sent" ? (
+                          {intake.deliveryChannel === "email" ? (
+                            intake.emailDeliveryStatus === "sent" ? (
+                              <Badge variant="outline" className="text-emerald-600">
+                                Sent
+                              </Badge>
+                            ) : intake.emailDeliveryStatus === "failed" ? (
+                              <Badge variant="outline" className="text-red-600">
+                                Failed
+                              </Badge>
+                            ) : (
+                              <Badge variant="outline">Pending</Badge>
+                            )
+                          ) : intake.smsDeliveryStatus === "sent" ? (
                             <Badge variant="outline" className="text-emerald-600">
                               Delivered
                             </Badge>
@@ -424,7 +524,9 @@ export default function PatientsPage() {
                             <DropdownMenuContent align="end">
                               {intake.status === "pending" && (
                                 <>
-                                  <DropdownMenuItem>Resend SMS</DropdownMenuItem>
+                                  <DropdownMenuItem>
+                                    Resend {intake.deliveryChannel === "email" ? "Email" : "SMS"}
+                                  </DropdownMenuItem>
                                   <DropdownMenuItem
                                     className="text-red-600"
                                     onClick={() => cancelIntakeMutation.mutate({ id: intake.id })}

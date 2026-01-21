@@ -16,15 +16,35 @@ import {
 import { verifyTurnstileToken } from "@/lib/turnstile/verify";
 import { createClient } from "@/lib/supabase/server";
 import { getStediClient } from "@/lib/stedi/client";
+import { DEFAULT_PROVIDER_NPI } from "@/lib/stedi/config";
 
 // Validation schemas
 const phoneSchema = z.string().regex(/^\+?[1-9]\d{9,14}$/, "Invalid phone number format");
 
 const createIntakeRequestSchema = z.object({
-  phone: phoneSchema,
+  phone: phoneSchema.optional(),
+  email: z.string().email("Invalid email address").optional(),
+  deliveryChannel: z.enum(["sms", "email"]),
   providerId: z.string().uuid().optional(),
+  appointmentId: z.string().uuid().optional(),
   dateOfService: z.string().optional(), // ISO date string
-});
+}).refine(
+  (data) => {
+    // If SMS, phone is required
+    if (data.deliveryChannel === "sms" && !data.phone) {
+      return false;
+    }
+    // If email, email is required
+    if (data.deliveryChannel === "email" && !data.email) {
+      return false;
+    }
+    return true;
+  },
+  {
+    message: "Phone number required for SMS or email address required for email delivery",
+    path: ["phone"], // This will show the error on the phone field
+  }
+);
 
 const addressSchema = z.object({
   line1: z.string().min(1, "Address is required"),
@@ -79,7 +99,10 @@ export const intakeRouter = createTRPCRouter({
     .mutation(async ({ input, ctx }) => {
       const result = await createIntakeRequest({
         phone: input.phone,
+        email: input.email,
+        deliveryChannel: input.deliveryChannel,
         providerId: input.providerId,
+        appointmentId: input.appointmentId,
         dateOfService: input.dateOfService,
         createdBy: ctx.user?.id,
       });
@@ -95,7 +118,13 @@ export const intakeRouter = createTRPCRouter({
         record_id: result.token?.id,
         action: "INSERT",
         old_data: null,
-        new_data: { phone: input.phone, providerId: input.providerId },
+        new_data: {
+          phone: input.phone,
+          email: input.email,
+          deliveryChannel: input.deliveryChannel,
+          providerId: input.providerId,
+          appointmentId: input.appointmentId,
+        },
         performed_by: ctx.user?.id,
       } as any);
 
@@ -417,11 +446,11 @@ export const intakeRouter = createTRPCRouter({
    */
   getPayers: publicProcedure.query(async () => {
     const supabase = await createClient();
-    
-    const { data, error } = await supabase
+
+    const { data, error} = await supabase
       .from("payers")
       .select("id, name, stedi_payer_id")
-      .order("name", { ascending: true });
+      .order("name", { ascending: true});
 
     if (error) {
       console.error("Failed to fetch payers:", error);
@@ -434,4 +463,327 @@ export const intakeRouter = createTRPCRouter({
       stediPayerId: p.stedi_payer_id,
     }));
   }),
+
+  /**
+   * Check eligibility only (early in the chat flow)
+   * Runs Stedi eligibility check with minimal required fields
+   */
+  checkEligibilityOnly: publicProcedure
+    .input(z.object({
+      token: z.string(),
+      firstName: z.string().min(1),
+      lastName: z.string().min(1),
+      dateOfBirth: z.string(),
+      payerId: z.string().uuid(),
+      memberId: z.string().min(1),
+      address: z.object({
+        line1: z.string().optional(),
+        city: z.string().optional(),
+        state: z.string().optional(),
+      }).optional(),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      // Validate token
+      const tokenValidation = await validateToken(input.token);
+      if (!tokenValidation.valid) {
+        throw new Error(tokenValidation.error || "Invalid intake link");
+      }
+
+      const supabase = await createClient();
+
+      // Get provider details (use default NPI if no provider associated)
+      let provider: any = null;
+      if (tokenValidation.token?.providerId) {
+        const { data, error } = await supabase
+          .from("providers")
+          .select("*")
+          .eq("id", tokenValidation.token.providerId)
+          .single();
+
+        if (!error && data) {
+          provider = data;
+        }
+      }
+
+      // Use default provider NPI if no provider found
+      const providerNPI = provider?.npi || DEFAULT_PROVIDER_NPI;
+      const providerData = provider || {
+        npi: DEFAULT_PROVIDER_NPI,
+        organization_name: "Test Organization",
+      };
+
+      // Get payer details
+      const { data: payer, error: payerError } = await supabase
+        .from("payers")
+        .select("*")
+        .eq("id", input.payerId)
+        .single();
+
+      if (payerError || !payer) {
+        throw new Error("Insurance company not found");
+      }
+
+      const payerData = payer as any;
+
+      // Run Stedi eligibility check
+      console.log("=== Starting Stedi eligibility check ===");
+      console.log("Payer stedi_payer_id:", payerData.stedi_payer_id);
+      console.log("Provider NPI:", providerData.npi);
+      console.log("Subscriber:", { memberId: input.memberId, firstName: input.firstName, lastName: input.lastName });
+
+      try {
+        const stedi = getStediClient();
+        const eligibilityResponse = await stedi.checkEligibility({
+          controlNumber: `ELG${Date.now()}`,
+          tradingPartnerServiceId: payerData.stedi_payer_id,
+          provider: {
+            organizationName: providerData.organization_name || undefined,
+            firstName: providerData.first_name || undefined,
+            lastName: providerData.last_name || undefined,
+            npi: providerData.npi,
+          },
+          subscriber: {
+            memberId: input.memberId,
+            firstName: input.firstName,
+            lastName: input.lastName,
+            dateOfBirth: input.dateOfBirth.replace(/-/g, ""), // YYYYMMDD format
+          },
+          encounter: {
+            dateOfService: tokenValidation.token.dateOfService || new Date().toISOString().split("T")[0],
+          },
+        });
+
+        // Parse response for key information
+        const isActive = eligibilityResponse.planStatus?.some(
+          (s: any) => s.statusCode === "1" || s.status?.toLowerCase().includes("active")
+        ) ?? false;
+
+        // Extract benefits information
+        const benefits = eligibilityResponse.benefitsInformation || [];
+
+        // Find copay (code B)
+        const copay = benefits.find((b: any) => b.code === "B");
+        // Find deductible remaining (code C with time qualifier 29)
+        const deductibleRemaining = benefits.find((b: any) => b.code === "C" && b.timeQualifier === "29");
+        // Find out-of-pocket remaining (code G with time qualifier 29)
+        const oopRemaining = benefits.find((b: any) => b.code === "G" && b.timeQualifier === "29");
+
+        console.log("=== Stedi eligibility check SUCCESS ===");
+        console.log("isActive:", isActive);
+        console.log("Copay:", copay?.benefitAmount);
+        console.log("Deductible:", deductibleRemaining?.benefitAmount);
+
+        return {
+          success: true,
+          isActive,
+          planStatus: eligibilityResponse.planStatus,
+          benefits: eligibilityResponse.benefitsInformation,
+          subscriberName: eligibilityResponse.subscriber,
+          summary: {
+            copayAmount: copay?.benefitAmount || null,
+            deductibleRemaining: deductibleRemaining?.benefitAmount || null,
+            oopMaxRemaining: oopRemaining?.benefitAmount || null,
+          },
+          // Store raw response for later use
+          rawResponse: eligibilityResponse,
+        };
+      } catch (error) {
+        console.error("Eligibility check failed:", error);
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : "Eligibility check failed",
+          isActive: false,
+        };
+      }
+    }),
+
+  /**
+   * Submit chat-driven intake
+   * Modified submission handler that accepts data from chat flow
+   * and avoids duplicate eligibility checks
+   */
+  submitChatIntake: publicProcedure
+    .input(z.object({
+      token: z.string(),
+      turnstileToken: z.string(),
+      demographics: z.object({
+        firstName: z.string().min(1),
+        lastName: z.string().min(1),
+        middleName: z.string().optional(),
+        dateOfBirth: z.string(),
+        sex: z.enum(["M", "F", "O"]),
+        phone: z.string(),
+        email: z.string().optional(),
+        address: z.object({
+          line1: z.string(),
+          line2: z.string().optional(),
+          city: z.string(),
+          state: z.string(),
+          zipCode: z.string(),
+        }),
+      }),
+      insurance: z.object({
+        payerId: z.string(),
+        memberId: z.string(),
+        groupNumber: z.string().optional(),
+        planType: z.string().optional(),
+        effectiveFrom: z.string(),
+        effectiveTo: z.string().optional(),
+        subscriberRelationship: z.enum(["self", "spouse", "child", "other"]),
+        subscriber: z.object({
+          firstName: z.string(),
+          lastName: z.string(),
+          dateOfBirth: z.string(),
+        }).optional(),
+      }).optional(),
+      selfPay: z.boolean(),
+      consentAcknowledged: z.boolean(),
+      eligibilityResult: z.any().optional(), // Pass-through from chat
+    }))
+    .mutation(async ({ input, ctx }) => {
+      // Get client IP for rate limiting
+      const clientIp = ctx.headers?.get?.("x-forwarded-for")?.split(",")[0] || "unknown";
+
+      // Check rate limits
+      const tokenRateLimit = await checkRateLimit(input.token, "token");
+      if (!tokenRateLimit.allowed) {
+        throw new Error("Too many submission attempts. Please try again later.");
+      }
+
+      const ipRateLimit = await checkRateLimit(clientIp, "ip");
+      if (!ipRateLimit.allowed) {
+        throw new Error("Too many requests. Please try again later.");
+      }
+
+      // Verify Turnstile token
+      const turnstileResult = await verifyTurnstileToken(input.turnstileToken, clientIp);
+      if (!turnstileResult.success) {
+        throw new Error(turnstileResult.error || "Verification failed");
+      }
+
+      // Validate the intake token
+      const tokenValidation = await validateToken(input.token);
+      if (!tokenValidation.valid) {
+        throw new Error(tokenValidation.error || "Invalid intake link");
+      }
+
+      const supabase = await createClient();
+
+      // Create patient record
+      const { data: patient, error: patientError } = await supabase
+        .from("patients")
+        .insert({
+          first_name: input.demographics.firstName,
+          last_name: input.demographics.lastName,
+          middle_name: input.demographics.middleName || null,
+          dob: input.demographics.dateOfBirth,
+          sex: input.demographics.sex,
+          phone: input.demographics.phone,
+          email: input.demographics.email || null,
+          address_line1: input.demographics.address.line1,
+          address_line2: input.demographics.address.line2 || null,
+          city: input.demographics.address.city,
+          state: input.demographics.address.state,
+          zip_code: input.demographics.address.zipCode,
+        } as any)
+        .select()
+        .single();
+
+      if (patientError || !patient) {
+        console.error("Failed to create patient:", patientError);
+        throw new Error("Failed to save patient information");
+      }
+
+      const patientData = patient as any;
+      let coverageId: string | null = null;
+
+      // Create coverage policy if not self-pay
+      if (!input.selfPay && input.insurance) {
+        let subscriberId: string | null = null;
+
+        // Create subscriber if different from patient
+        if (input.insurance.subscriberRelationship !== "self" && input.insurance.subscriber) {
+          const { data: subscriber } = await supabase
+            .from("subscribers")
+            .insert({
+              member_id: input.insurance.memberId,
+              group_number: input.insurance.groupNumber || null,
+              first_name: input.insurance.subscriber.firstName,
+              last_name: input.insurance.subscriber.lastName,
+              dob: input.insurance.subscriber.dateOfBirth,
+              relationship_to_patient: input.insurance.subscriberRelationship,
+            } as any)
+            .select()
+            .single();
+
+          if (subscriber) {
+            subscriberId = (subscriber as any).id;
+          }
+        }
+
+        // Create coverage policy
+        const { data: coverage } = await supabase
+          .from("coverage_policies")
+          .insert({
+            patient_id: patientData.id,
+            payer_id: input.insurance.payerId,
+            member_id: input.insurance.memberId,
+            group_number: input.insurance.groupNumber || null,
+            plan_type: input.insurance.planType || null,
+            effective_from: input.insurance.effectiveFrom,
+            effective_to: input.insurance.effectiveTo || null,
+            subscriber_id: subscriberId,
+            priority: 1,
+            status: "active",
+          } as any)
+          .select()
+          .single();
+
+        if (coverage) {
+          coverageId = (coverage as any).id;
+
+          // If we already have eligibility result from chat flow, store it
+          if (input.eligibilityResult && input.eligibilityResult.rawResponse) {
+            await supabase
+              .from("eligibility_checks")
+              .insert({
+                coverage_id: coverageId,
+                provider_id: tokenValidation.token?.providerId,
+                date_of_service: tokenValidation.token?.dateOfService || new Date().toISOString().split("T")[0],
+                request_payload: {
+                  memberId: input.insurance.memberId,
+                  firstName: input.demographics.firstName,
+                  lastName: input.demographics.lastName,
+                },
+                response_payload: input.eligibilityResult.rawResponse,
+                is_active: input.eligibilityResult.isActive ?? null,
+                benefits_summary: input.eligibilityResult.benefits || null,
+              } as any);
+          }
+        }
+      }
+
+      // Mark intake as complete
+      await completeIntake({
+        token: input.token,
+        patientId: patientData.id,
+      });
+
+      // Log to audit
+      await supabase.from("audit_log").insert({
+        table_name: "patients",
+        record_id: patientData.id,
+        action: "INSERT",
+        old_data: null,
+        new_data: { source: "chat_intake", token: input.token },
+        performed_by: null,
+      } as any);
+
+      return {
+        success: true,
+        patientId: patientData.id,
+        coverageId,
+        eligibility: input.eligibilityResult,
+      };
+    }),
 });

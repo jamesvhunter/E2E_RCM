@@ -8,6 +8,7 @@ import { eligibilityRouter } from "./eligibility";
 import { practiceRouter } from "./practice";
 import { workQueueRouter } from "./work-queue";
 import { intakeRouter } from "./intake";
+import { appointmentRouter } from "./appointment";
 
 /**
  * Main application router
@@ -23,6 +24,7 @@ export const appRouter = createTRPCRouter({
   practice: practiceRouter,
   workQueue: workQueueRouter,
   intake: intakeRouter,
+  appointment: appointmentRouter,
 });
 
 export type AppRouter = typeof appRouter;

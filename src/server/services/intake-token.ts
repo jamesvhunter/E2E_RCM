@@ -6,6 +6,7 @@
 import { randomBytes } from "crypto";
 import { createClient } from "@/lib/supabase/server";
 import { getTwilioClient } from "@/lib/twilio/client";
+import { getResendClient } from "@/lib/resend/client";
 
 // Token expiry duration (48 hours in milliseconds)
 const TOKEN_EXPIRY_MS = 48 * 60 * 60 * 1000;
@@ -16,8 +17,11 @@ const MAX_REQUESTS_PER_IP = 10;
 const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
 
 export interface CreateIntakeRequestInput {
-  phone: string;
+  phone?: string;
+  email?: string;
+  deliveryChannel: "sms" | "email";
   providerId?: string;
+  appointmentId?: string;
   dateOfService?: string;
   createdBy?: string;
 }
@@ -25,8 +29,11 @@ export interface CreateIntakeRequestInput {
 export interface IntakeToken {
   id: string;
   token: string;
-  phone: string;
+  phone: string | null;
+  email: string | null;
+  deliveryChannel: "sms" | "email";
   providerId: string | null;
+  appointmentId: string | null;
   dateOfService: string | null;
   status: "pending" | "completed" | "expired" | "cancelled";
   patientId: string | null;
@@ -35,6 +42,9 @@ export interface IntakeToken {
   smsSentAt: string | null;
   smsDeliveryStatus: string | null;
   twilioMessageSid: string | null;
+  emailSentAt: string | null;
+  emailDeliveryStatus: string | null;
+  resendEmailId: string | null;
   createdBy: string | null;
   createdAt: string;
 }
@@ -58,11 +68,19 @@ export function generateSecureToken(): string {
 }
 
 /**
- * Create a new intake request and send SMS
+ * Create a new intake request and send via SMS or email
  */
 export async function createIntakeRequest(
   input: CreateIntakeRequestInput
 ): Promise<{ success: boolean; token?: IntakeToken; error?: string }> {
+  // Validation
+  if (input.deliveryChannel === "sms" && !input.phone) {
+    return { success: false, error: "Phone number required for SMS delivery" };
+  }
+  if (input.deliveryChannel === "email" && !input.email) {
+    return { success: false, error: "Email address required for email delivery" };
+  }
+
   const supabase = await createClient();
   const token = generateSecureToken();
   const expiresAt = new Date(Date.now() + TOKEN_EXPIRY_MS).toISOString();
@@ -72,8 +90,11 @@ export async function createIntakeRequest(
     .from("intake_tokens")
     .insert({
       token,
-      phone: input.phone,
+      phone: input.phone || null,
+      email: input.email || null,
+      delivery_channel: input.deliveryChannel,
       provider_id: input.providerId || null,
+      appointment_id: input.appointmentId || null,
       date_of_service: input.dateOfService || null,
       status: "pending",
       expires_at: expiresAt,
@@ -91,28 +112,50 @@ export async function createIntakeRequest(
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
   const intakeUrl = `${baseUrl}/intake/${token}`;
 
-  // Send SMS via Twilio
-  const twilioClient = getTwilioClient();
-  const smsResult = await twilioClient.sendIntakeSMS(input.phone, intakeUrl);
+  let deliveryResult: { success: boolean; error?: string };
 
-  // Update the token record with SMS status
-  const updateData: Record<string, unknown> = {
-    sms_sent_at: new Date().toISOString(),
-    sms_delivery_status: smsResult.success ? "sent" : "failed",
-  };
-  if (smsResult.messageSid) {
-    updateData.twilio_message_sid = smsResult.messageSid;
+  // Send via appropriate channel
+  if (input.deliveryChannel === "sms") {
+    const twilioClient = getTwilioClient();
+    const smsResult = await twilioClient.sendIntakeSMS(input.phone!, intakeUrl);
+
+    // Update token with SMS status
+    await supabase
+      .from("intake_tokens")
+      .update({
+        sms_sent_at: new Date().toISOString(),
+        sms_delivery_status: smsResult.success ? "sent" : "failed",
+        twilio_message_sid: smsResult.messageSid || null,
+      } as any)
+      .eq("id", (data as any).id);
+
+    deliveryResult = smsResult;
+  } else {
+    // Email delivery
+    const resendClient = getResendClient();
+    const emailResult = await resendClient.sendIntakeEmail(
+      input.email!,
+      intakeUrl,
+      input.dateOfService
+    );
+
+    // Update token with email status
+    await supabase
+      .from("intake_tokens")
+      .update({
+        email_sent_at: new Date().toISOString(),
+        email_delivery_status: emailResult.success ? "sent" : "failed",
+        resend_email_id: emailResult.emailId || null,
+      } as any)
+      .eq("id", (data as any).id);
+
+    deliveryResult = emailResult;
   }
 
-  await supabase
-    .from("intake_tokens")
-    .update(updateData as any)
-    .eq("id", (data as any).id);
-
-  if (!smsResult.success) {
+  if (!deliveryResult.success) {
     return {
       success: false,
-      error: `SMS delivery failed: ${smsResult.error}`,
+      error: `${input.deliveryChannel.toUpperCase()} delivery failed: ${deliveryResult.error}`,
     };
   }
 
@@ -326,8 +369,11 @@ function mapDbToIntakeToken(data: any): IntakeToken {
   return {
     id: data.id,
     token: data.token,
-    phone: data.phone,
+    phone: data.phone || null,
+    email: data.email || null,
+    deliveryChannel: data.delivery_channel || "sms",
     providerId: data.provider_id,
+    appointmentId: data.appointment_id,
     dateOfService: data.date_of_service,
     status: data.status,
     patientId: data.patient_id,
@@ -336,6 +382,9 @@ function mapDbToIntakeToken(data: any): IntakeToken {
     smsSentAt: data.sms_sent_at,
     smsDeliveryStatus: data.sms_delivery_status,
     twilioMessageSid: data.twilio_message_sid,
+    emailSentAt: data.email_sent_at,
+    emailDeliveryStatus: data.email_delivery_status,
+    resendEmailId: data.resend_email_id,
     createdBy: data.created_by,
     createdAt: data.created_at,
   };

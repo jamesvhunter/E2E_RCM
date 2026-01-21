@@ -343,18 +343,23 @@ export function getMockEligibilityResponse(memberId: string): EligibilityRespons
  * @returns true if mock mode should be used
  */
 export function shouldUseMockData(apiKey: string | undefined, payerId: string): boolean {
-  // Use mock if API key is missing or placeholder
-  if (!apiKey || apiKey === "your-stedi-api-key") {
+  // Use mock if API key is missing
+  if (!apiKey) {
     return true;
   }
 
-  // Use mock if payer ID is test payer
-  if (payerId === "STEDI-TEST" || payerId.includes("TEST")) {
+  // Use mock if API key is placeholder
+  if (apiKey === "your-stedi-api-key") {
     return true;
   }
 
-  // Check if API key is a test key (starts with "test_")
+  // Allow real API calls for valid test keys starting with "test_"
   if (apiKey.startsWith("test_")) {
+    return false;
+  }
+
+  // Use mock only for explicit test payer ID
+  if (payerId === "STEDI-TEST") {
     return true;
   }
 

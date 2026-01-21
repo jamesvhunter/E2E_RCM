@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, use } from "react";
+import { useState, use, useRef } from "react";
 import { PatientIntakeForm } from "@/components/forms/PatientIntakeForm";
+import { IntakeChatWidget } from "@/components/chat/IntakeChatWidget";
 import { trpc } from "@/lib/trpc/client";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { AlertCircle, CheckCircle2, Clock, Loader2, Shield } from "lucide-react";
@@ -18,6 +19,7 @@ export default function IntakePage({ params }: IntakePageProps) {
     coverageId?: string | null;
     eligibility?: any;
   } | null>(null);
+  const formRef = useRef<HTMLDivElement>(null);
 
   // Validate token on page load
   const { data: validation, isLoading, error } = trpc.intake.validateToken.useQuery(
@@ -171,15 +173,16 @@ export default function IntakePage({ params }: IntakePageProps) {
     );
   }
 
-  // Show the intake form
+  // Show the chat-driven intake flow
   return (
-    <div>
-      <div className="text-center mb-8">
+    <div className="min-h-screen">
+      {/* Header */}
+      <div className="text-center mb-8 pt-8">
         <h2 className="text-2xl font-bold text-slate-800 mb-2">
-          Patient Intake Form
+          Patient Check-In
         </h2>
         <p className="text-slate-600">
-          Please complete this form before your appointment.
+          Let&apos;s verify your insurance and complete your intake.
         </p>
         {validation.expiresAt && (
           <p className="text-sm text-slate-500 mt-2">
@@ -196,10 +199,10 @@ export default function IntakePage({ params }: IntakePageProps) {
         )}
       </div>
 
-      <PatientIntakeForm
+      {/* Chat-Driven Intake Widget (now full-screen capable on mobile) */}
+      <IntakeChatWidget
         token={token}
-        dateOfService={validation.dateOfService}
-        onSuccess={handleSuccess}
+        onComplete={handleSuccess}
       />
     </div>
   );
