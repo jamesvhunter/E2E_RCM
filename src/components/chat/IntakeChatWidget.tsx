@@ -96,6 +96,8 @@ export function IntakeChatWidget({ token, onComplete }: IntakeChatWidgetProps) {
     hasInsurance: null,
   });
   const [isCheckingEligibility, setIsCheckingEligibility] = useState(false);
+  const [isProcessingToolCall, setIsProcessingToolCall] = useState(false);
+  const [hasUserResponded, setHasUserResponded] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -123,6 +125,9 @@ export function IntakeChatWidget({ token, onComplete }: IntakeChatWidgetProps) {
       // Check if message contains tool_calls JSON
       const toolCallMatch = lastMessage.content.match(/\{"tool_calls":\[.*?\]\}/);
       if (toolCallMatch) {
+        // Show loading state immediately to hide the JSON
+        setIsProcessingToolCall(true);
+
         try {
           console.log("Found tool call JSON:", toolCallMatch[0]);
           const parsed = JSON.parse(toolCallMatch[0]);
@@ -133,23 +138,35 @@ export function IntakeChatWidget({ token, onComplete }: IntakeChatWidgetProps) {
           if (functionName === "showMinimalEligibilityForm") {
             setCurrentForm("minimal_eligibility");
             setPhase("collecting");
+            // Hide loading state after form is set
+            setTimeout(() => setIsProcessingToolCall(false), 100);
           } else if (functionName === "showRemainingDemographicsForm") {
             setCurrentForm("remaining_demographics");
+            setTimeout(() => setIsProcessingToolCall(false), 100);
           } else if (functionName === "showFullDemographicsForm") {
             setCurrentForm("full_demographics");
             setPhase("collecting");
+            setTimeout(() => setIsProcessingToolCall(false), 100);
           } else if (functionName === "showFullInsuranceForm") {
             setCurrentForm("full_insurance");
+            setTimeout(() => setIsProcessingToolCall(false), 100);
           } else if (functionName === "showConsentForm") {
             setCurrentForm("consent");
             setPhase("completing");
+            setTimeout(() => setIsProcessingToolCall(false), 100);
           } else if (functionName === "checkEligibility") {
             console.log("=== Triggering handleEligibilityCheck ===");
             handleEligibilityCheck();
+            setIsProcessingToolCall(false);
+          } else {
+            setIsProcessingToolCall(false);
           }
         } catch (e) {
           console.error("Failed to parse tool call:", e);
+          setIsProcessingToolCall(false);
         }
+      } else {
+        setIsProcessingToolCall(false);
       }
     }
   }, [messages]);
@@ -164,7 +181,7 @@ export function IntakeChatWidget({ token, onComplete }: IntakeChatWidgetProps) {
   // ========================================================================
 
   const handleMinimalEligibilitySubmit = async (data: any) => {
-    // Store collected data
+    // Store collected data with default values for required fields
     setCollectedData((prev) => ({
       ...prev,
       demographics: {
@@ -178,6 +195,8 @@ export function IntakeChatWidget({ token, onComplete }: IntakeChatWidgetProps) {
         ...prev.insurance,
         payerId: data.payerId,
         memberId: data.memberId,
+        effectiveFrom: new Date().toISOString().split('T')[0], // Default to today
+        subscriberRelationship: "self" as const, // Default to self
       },
       hasInsurance: true,
     }));
@@ -225,7 +244,7 @@ export function IntakeChatWidget({ token, onComplete }: IntakeChatWidgetProps) {
 
       // Send result back to chat
       if (result.success && result.isActive) {
-        const summary = result.summary || {};
+        const summary: any = result.summary || {};
         let benefitsText = "";
         if (summary.copayAmount) benefitsText += `Copay: $${summary.copayAmount}. `;
         if (summary.deductibleRemaining) benefitsText += `Deductible remaining: $${summary.deductibleRemaining}. `;
@@ -304,16 +323,16 @@ export function IntakeChatWidget({ token, onComplete }: IntakeChatWidgetProps) {
     });
   };
 
-  const handleConsentSubmit = async (data: { consentAcknowledged: boolean; turnstileToken: string }) => {
+  const handleConsentSubmit = async (data: { consentAcknowledged: boolean; turnstileToken?: string }) => {
     setPhase("completing");
     setCurrentForm(null);
 
     try {
       const result = await submitIntakeMutation.mutateAsync({
         token,
-        turnstileToken: data.turnstileToken,
+        turnstileToken: data.turnstileToken || "",
         demographics: collectedData.demographics as any,
-        insurance: collectedData.hasInsurance ? collectedData.insurance : undefined,
+        insurance: collectedData.hasInsurance ? (collectedData.insurance as any) : undefined,
         selfPay: !collectedData.hasInsurance,
         consentAcknowledged: data.consentAcknowledged,
         eligibilityResult: eligibilityResult || undefined,
@@ -358,46 +377,84 @@ export function IntakeChatWidget({ token, onComplete }: IntakeChatWidgetProps) {
     );
   }
 
-  return (
-    <Card className="mx-auto w-full max-w-2xl h-[600px] md:h-[700px] shadow-2xl flex flex-col">
-      <CardHeader className="flex-row items-center justify-between space-y-0 pb-4 border-b">
-        <CardTitle className="flex items-center gap-2 text-lg">
-          <MessageCircle className="w-5 h-5 text-primary" />
-          Check-In Assistant
-        </CardTitle>
-        {phase === "done" && (
-          <Button variant="ghost" size="icon" onClick={() => setIsOpen(false)}>
-            <X className="w-4 h-4" />
-          </Button>
-        )}
-      </CardHeader>
+  // Wrapper submit handler to track user response
+  const handleFormSubmit = (e: React.FormEvent) => {
+    setHasUserResponded(true);
+    handleSubmit(e);
+  };
 
-      <CardContent className="flex-1 flex flex-col p-0 overflow-hidden">
-        {/* Messages area */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-4">
-          {messages.map((message) => {
-            // Filter out tool_calls JSON from display
+  return (
+    <div className="w-full min-h-screen flex flex-col bg-white">
+      {/* Header - only show after user responds */}
+      {hasUserResponded && (
+        <div className="sticky top-0 z-10 bg-white border-b">
+          <div className="max-w-2xl mx-auto px-4 py-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <MessageCircle className="w-5 h-5 text-primary" />
+                <h2 className="text-lg font-semibold">Check-In Assistant</h2>
+              </div>
+              {phase === "done" && (
+                <Button variant="ghost" size="icon" onClick={() => setIsOpen(false)}>
+                  <X className="w-4 h-4" />
+                </Button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Messages area - scrollable full page */}
+      <div className={cn("flex-1 w-full", !hasUserResponded && "flex items-center justify-center")}>
+        <div className={cn("max-w-2xl mx-auto px-4 space-y-4", hasUserResponded ? "py-6 pb-32" : "w-full")}>
+          {messages.map((message, index) => {
+            // Check if message contains tool calls
+            const hasToolCalls = message.content.includes('"tool_calls"');
+            const isLastMessage = index === messages.length - 1;
+
+            // Hide messages with tool calls entirely and show processing state instead
+            if (hasToolCalls && message.role === "assistant") {
+              if (isLastMessage && isProcessingToolCall) {
+                return (
+                  <div key={message.id} className="flex justify-start">
+                    <div className="bg-muted rounded-lg px-4 py-2 max-w-[85%] flex items-center gap-2">
+                      <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
+                      <span className="text-sm text-muted-foreground">Processing...</span>
+                    </div>
+                  </div>
+                );
+              }
+              return null;
+            }
+
+            // Filter out tool_calls JSON from display (backup)
             const cleanContent = message.content.replace(/\{"tool_calls":\[.*?\]\}/g, "").trim();
 
-            // Don't render empty messages (tool calls only)
+            // Don't render empty messages
             if (!cleanContent && message.role === "assistant") {
               return null;
             }
+
+            // Style welcome message differently when centered
+            const isWelcomeMessage = index === 0 && !hasUserResponded;
 
             return (
               <div
                 key={message.id}
                 className={cn(
                   "flex",
-                  message.role === "user" ? "justify-end" : "justify-start"
+                  isWelcomeMessage ? "justify-center" : message.role === "user" ? "justify-end" : "justify-start"
                 )}
               >
                 <div
                   className={cn(
-                    "max-w-[85%] rounded-lg px-4 py-2 text-sm",
+                    "rounded-lg px-4 py-2",
+                    isWelcomeMessage
+                      ? "text-2xl font-medium text-center"
+                      : "text-sm max-w-[85%]",
                     message.role === "user"
                       ? "bg-primary text-primary-foreground"
-                      : "bg-muted text-foreground"
+                      : "bg-transparent text-foreground"
                   )}
                 >
                   {cleanContent}
@@ -520,32 +577,39 @@ export function IntakeChatWidget({ token, onComplete }: IntakeChatWidgetProps) {
 
           <div ref={messagesEndRef} />
         </div>
+      </div>
 
-        {/* Input area (hide when done) */}
-        {phase !== "done" && (
-          <form onSubmit={handleSubmit} className="p-4 border-t">
-            <div className="flex gap-2">
-              <Input
-                value={input}
-                onChange={handleInputChange}
-                placeholder="Type your message..."
-                disabled={isLoading || !!currentForm || isCheckingEligibility}
-                className="flex-1"
-              />
-              <Button
-                type="submit"
-                size="icon"
-                disabled={isLoading || !input.trim() || !!currentForm || isCheckingEligibility}
-              >
-                {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-              </Button>
-            </div>
-            <p className="text-xs text-muted-foreground mt-2">
-              🔒 Secure and HIPAA compliant
-            </p>
-          </form>
-        )}
-      </CardContent>
-    </Card>
+      {/* Input area - centered initially, then fixed to bottom after user responds */}
+      {phase !== "done" && (
+        <div className={cn(
+          "bg-white",
+          hasUserResponded ? "fixed bottom-0 left-0 right-0 border-t shadow-lg" : "w-full"
+        )}>
+          <div className="max-w-2xl mx-auto px-4 py-4">
+            <form onSubmit={handleFormSubmit}>
+              <div className="flex gap-2">
+                <Input
+                  value={input}
+                  onChange={handleInputChange}
+                  placeholder="Type your message..."
+                  disabled={isLoading || !!currentForm || isCheckingEligibility}
+                  className="flex-1"
+                />
+                <Button
+                  type="submit"
+                  size="icon"
+                  disabled={isLoading || !input.trim() || !!currentForm || isCheckingEligibility}
+                >
+                  {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground mt-2">
+                🔒 Secure and HIPAA compliant
+              </p>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }

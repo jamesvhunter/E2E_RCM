@@ -1,4 +1,5 @@
 import Link from "next/link";
+import Image from "next/image";
 import { redirect } from "next/navigation";
 import {
   FileText,
@@ -9,6 +10,7 @@ import {
   AlertCircle,
   Settings,
   Building2,
+  CalendarDays,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -25,6 +27,7 @@ interface NavItem {
 
 const navItems: NavItem[] = [
   { href: "/dashboard", label: "Overview", icon: FileText },
+  { href: "/dashboard/appointments", label: "Schedules", icon: CalendarDays },
   { href: "/dashboard/patients", label: "Patients", icon: Users },
   { href: "/dashboard/encounters", label: "Encounters", icon: Stethoscope },
   { href: "/dashboard/claims", label: "Claims", icon: Receipt },
@@ -57,10 +60,13 @@ export default async function DashboardLayout({
         {/* Logo */}
         <div className="p-4 border-b border-sidebar-border">
           <Link href="/dashboard" className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-lg bg-sidebar-primary flex items-center justify-center">
-              <FileText className="w-4 h-4 text-sidebar-primary-foreground" />
-            </div>
-            <span className="font-semibold text-sidebar-foreground">ClaimFlow</span>
+            <Image
+              src="/freed-logo.svg"
+              alt="Freed RCM"
+              width={160}
+              height={32}
+              className="h-8 w-auto"
+            />
           </Link>
         </div>
 
@@ -96,7 +102,7 @@ export default async function DashboardLayout({
           </div>
           <SignOutButton />
           <div className="text-xs text-sidebar-foreground/60 pt-2">
-            <p>ClaimFlow v0.1.0</p>
+            <p>Freed RCM v0.1.0</p>
             <p className="mt-1">Phase 1: Patient Intake</p>
           </div>
         </div>
@@ -108,7 +114,7 @@ export default async function DashboardLayout({
         <header className="h-14 border-b border-border flex items-center justify-between px-6">
           <div className="flex items-center gap-4">
             <h1 className="text-sm font-medium text-muted-foreground">
-              AI-Native EHR & Practice Management
+              AI-Native Practice Management
             </h1>
           </div>
           <div className="flex items-center gap-3">

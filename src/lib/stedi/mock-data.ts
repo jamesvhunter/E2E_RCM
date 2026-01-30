@@ -10,7 +10,7 @@ import { EligibilityResponse } from "./client";
  * Mock active medical coverage eligibility response
  * Simulates a subscriber with active coverage and comprehensive benefits
  */
-export const MOCK_ACTIVE_ELIGIBILITY: EligibilityResponse = {
+export const MOCK_ACTIVE_ELIGIBILITY = {
   controlNumber: "TEST123456789",
   tradingPartnerServiceId: "STEDI-TEST",
   provider: {
@@ -22,7 +22,7 @@ export const MOCK_ACTIVE_ELIGIBILITY: EligibilityResponse = {
     firstName: "John",
     lastName: "Doe",
     dateOfBirth: "19800115",
-  },
+  } as any,
   planStatus: [
     {
       statusCode: "1",
@@ -96,7 +96,7 @@ export const MOCK_ACTIVE_ELIGIBILITY: EligibilityResponse = {
  * Mock inactive coverage eligibility response
  * Simulates a subscriber with terminated coverage
  */
-export const MOCK_INACTIVE_ELIGIBILITY: EligibilityResponse = {
+export const MOCK_INACTIVE_ELIGIBILITY = {
   controlNumber: "TEST123456789",
   tradingPartnerServiceId: "STEDI-TEST",
   provider: {
@@ -131,7 +131,7 @@ export const MOCK_INACTIVE_ELIGIBILITY: EligibilityResponse = {
  * Mock error response - Invalid subscriber
  * Simulates AAA error code 72 (Invalid/Missing Subscriber Identification Number)
  */
-export const MOCK_ERROR_INVALID_SUBSCRIBER: EligibilityResponse = {
+export const MOCK_ERROR_INVALID_SUBSCRIBER = {
   controlNumber: "TEST123456789",
   tradingPartnerServiceId: "STEDI-TEST",
   provider: {
@@ -162,7 +162,7 @@ export const MOCK_ERROR_INVALID_SUBSCRIBER: EligibilityResponse = {
  * Mock family coverage eligibility response
  * Simulates family-level benefits with different individual vs family amounts
  */
-export const MOCK_FAMILY_COVERAGE: EligibilityResponse = {
+export const MOCK_FAMILY_COVERAGE = {
   controlNumber: "TEST123456789",
   tradingPartnerServiceId: "STEDI-TEST",
   provider: {
@@ -240,7 +240,7 @@ export const MOCK_FAMILY_COVERAGE: EligibilityResponse = {
  * Mock high-deductible health plan (HDHP) eligibility response
  * Simulates an HDHP with HSA eligibility
  */
-export const MOCK_HDHP_ELIGIBILITY: EligibilityResponse = {
+export const MOCK_HDHP_ELIGIBILITY = {
   controlNumber: "TEST123456789",
   tradingPartnerServiceId: "STEDI-TEST",
   provider: {
@@ -311,7 +311,7 @@ export const MOCK_HDHP_ELIGIBILITY: EligibilityResponse = {
  * @param memberId - The member ID from the request
  * @returns Mock eligibility response
  */
-export function getMockEligibilityResponse(memberId: string): EligibilityResponse {
+export function getMockEligibilityResponse(memberId: string) {
   const normalizedId = memberId.toUpperCase().trim();
 
   // Match based on member ID patterns

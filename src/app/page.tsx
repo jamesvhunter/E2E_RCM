@@ -1,9 +1,7 @@
 import Link from "next/link";
+import Image from "next/image";
 import {
   ArrowRight,
-  FileText,
-  CreditCard,
-  CheckCircle,
   Zap,
   Shield,
   BarChart3,
@@ -26,10 +24,13 @@ export default function LandingPage() {
         <div className="container mx-auto px-6 py-4">
           <nav className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center">
-                <FileText className="w-4 h-4 text-primary-foreground" />
-              </div>
-              <span className="text-xl font-semibold">ClaimFlow</span>
+              <Image
+                src="/freed-logo.svg"
+                alt="Freed RCM"
+                width={160}
+                height={32}
+                className="h-8 w-auto"
+              />
             </div>
             <div className="flex items-center gap-4">
               <Badge variant="outline" className="text-xs">
@@ -61,7 +62,7 @@ export default function LandingPage() {
             </h1>
             
             <p className="text-xl text-muted-foreground mb-8 max-w-2xl mx-auto">
-              An AI-native EHR and Practice Management system that transforms 
+              An AI-native Practice Management system that transforms
               clinical documentation into billing-grade claims, automatically.
             </p>
 
@@ -166,7 +167,7 @@ export default function LandingPage() {
               Ready to streamline your revenue cycle?
             </h2>
             <p className="text-muted-foreground mb-8">
-              ClaimFlow is currently in development. This prototype demonstrates 
+              Freed RCM is currently in development. This prototype demonstrates
               the core architecture for AI-native medical billing.
             </p>
             <Link href="/dashboard">
@@ -184,10 +185,16 @@ export default function LandingPage() {
         <div className="container mx-auto px-6 py-8">
           <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <FileText className="w-4 h-4" />
-              <span>ClaimFlow</span>
+              <Image
+                src="/freed-icon.png"
+                alt="Freed RCM"
+                width={16}
+                height={16}
+                className="w-4 h-4"
+              />
+              <span>Freed RCM</span>
               <span>·</span>
-              <span>AI-Native EHR & Practice Management</span>
+              <span>AI-Native Practice Management</span>
             </div>
             <div className="text-sm text-muted-foreground">
               High-fidelity prototype · Not for production use

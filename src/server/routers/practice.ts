@@ -2,14 +2,14 @@ import { z } from "zod";
 import { createTRPCRouter, protectedProcedure } from "@/lib/trpc/server";
 
 const organizationSchema = z.object({
-  name: z.string().min(1),
+  name: z.string().optional(),
   taxId: z.string().optional(),
-  npi: z.string().length(10).optional(),
-  addressLine1: z.string().min(1),
+  npi: z.string().optional(),
+  addressLine1: z.string().optional(),
   addressLine2: z.string().optional(),
-  city: z.string().min(1),
-  state: z.string().length(2),
-  zipCode: z.string(),
+  city: z.string().optional(),
+  state: z.string().optional(),
+  zipCode: z.string().optional(),
   phone: z.string().optional(),
 });
 
@@ -59,15 +59,15 @@ export const practiceRouter = createTRPCRouter({
       const { data, error } = await supabase
         .from("organizations")
         .insert({
-          name: input.name,
-          tax_id: input.taxId,
-          npi: input.npi,
-          address_line1: input.addressLine1,
-          address_line2: input.addressLine2,
-          city: input.city,
-          state: input.state,
-          zip_code: input.zipCode,
-          phone: input.phone,
+          name: input.name || null,
+          tax_id: input.taxId || null,
+          npi: input.npi || null,
+          address_line1: input.addressLine1 || null,
+          address_line2: input.addressLine2 || null,
+          city: input.city || null,
+          state: input.state || null,
+          zip_code: input.zipCode || null,
+          phone: input.phone || null,
         })
         .select()
         .single();

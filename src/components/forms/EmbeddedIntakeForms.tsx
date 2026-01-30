@@ -607,7 +607,7 @@ const consentSchema = z.object({
   consentAcknowledged: z.boolean().refine((val) => val === true, {
     message: "You must acknowledge consent to continue",
   }),
-  turnstileToken: z.string().min(1, "Please complete the verification"),
+  turnstileToken: z.string().optional(),
 });
 
 type ConsentData = z.infer<typeof consentSchema>;
@@ -618,6 +618,8 @@ interface ConsentFormProps {
 
 export function ConsentForm({ onSubmit }: ConsentFormProps) {
   const [turnstileToken, setTurnstileToken] = useState<string>("");
+  const hasTurnstileKey = !!process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY;
+
   const {
     register,
     handleSubmit,
@@ -661,18 +663,24 @@ export function ConsentForm({ onSubmit }: ConsentFormProps) {
           <p className="text-xs text-red-600">{errors.consentAcknowledged.message}</p>
         )}
 
-        <div>
-          <Label className="text-sm mb-2 block">Security Verification *</Label>
-          <Turnstile
-            siteKey={process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY || ""}
-            onSuccess={handleTurnstileSuccess}
-          />
-          {errors.turnstileToken && (
-            <p className="text-xs text-red-600 mt-1">{errors.turnstileToken.message}</p>
-          )}
-        </div>
+        {hasTurnstileKey && (
+          <div>
+            <Label className="text-sm mb-2 block">Security Verification *</Label>
+            <Turnstile
+              siteKey={process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY || ""}
+              onSuccess={handleTurnstileSuccess}
+            />
+            {errors.turnstileToken && (
+              <p className="text-xs text-red-600 mt-1">{errors.turnstileToken.message}</p>
+            )}
+          </div>
+        )}
 
-        <Button type="submit" disabled={isSubmitting || !turnstileToken} className="w-full">
+        <Button
+          type="submit"
+          disabled={isSubmitting || (hasTurnstileKey && !turnstileToken) || !watch("consentAcknowledged")}
+          className="w-full"
+        >
           {isSubmitting ? "Submitting..." : "Complete Intake"}
         </Button>
       </form>
